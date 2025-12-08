@@ -50,7 +50,8 @@ extern "C" {
         disk_format: u32,
         read_only: bool,
     ) -> i32;
-    fn krun_add_vsock_port(ctx_id: u32, port: u32, c_filepath: *const c_char) -> i32;
+    fn krun_add_vsock_port2(ctx_id: u32, port: u32, c_filepath: *const c_char, listen: bool)
+        -> i32;
     fn krun_add_virtiofs(ctx_id: u32, c_tag: *const c_char, c_path: *const c_char) -> i32;
     fn krun_set_console_output(ctx_id: u32, c_filepath: *const c_char) -> i32;
     fn krun_add_net_unixgram(
@@ -294,6 +295,19 @@ impl FromStr for VsockConfig {
             }
             vsock_config.action = VsockAction::from_str("listen")?
         }
+        if let Some(v) = args.remove("connect") {
+            if !v.is_empty() {
+                return Err(anyhow!(format!(
+                    "unexpected value for virtio-vsock argument: connect={v}"
+                )));
+            }
+            if vsock_config.action == VsockAction::Listen {
+                return Err(anyhow!(
+                    "virtio-vsock argument \"listen\" and \"connect\" are mutually exclusive and cannot be used together."
+                ));
+            }
+            vsock_config.action = VsockAction::from_str("connect")?
+        }
 
         check_unknown_args(args, "virtio-vsock")?;
 
@@ -307,7 +321,13 @@ impl KrunContextSet for VsockConfig {
     unsafe fn krun_ctx_set(&self, id: u32) -> Result<(), anyhow::Error> {
         let path_cstr = path_to_cstring(&self.socket_url)?;
 
-        if krun_add_vsock_port(id, self.port, path_cstr.as_ptr()) < 0 {
+        if krun_add_vsock_port2(
+            id,
+            self.port,
+            path_cstr.as_ptr(),
+            self.action == VsockAction::Listen,
+        ) < 0
+        {
             return Err(anyhow!(format!(
                 "unable to add vsock port {} for path {}",
                 self.port,
@@ -322,8 +342,9 @@ impl KrunContextSet for VsockConfig {
 /// virtio-vsock action.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum VsockAction {
-    #[default]
     Listen,
+    #[default]
+    Connect,
 }
 
 impl FromStr for VsockAction {
@@ -334,6 +355,7 @@ impl FromStr for VsockAction {
 
         match &s[..] {
             "listen" => Ok(Self::Listen),
+            "connect" => Ok(Self::Connect),
             _ => Err(anyhow!("invalid vsock action")),
         }
     }
